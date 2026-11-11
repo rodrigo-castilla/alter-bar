@@ -14,9 +14,11 @@ several named bars with one command:
   [plugin-based fork](https://github.com/rodrigo-castilla/shoji-bar-4-fork)) or any executable,
   registered with `alter-bar set-bar <name> <path>`.
 
-Quickshell is **never killed**: when a shoji bar is chosen only Omarchy's bar is hidden, because
-Omarchy still needs quickshell for notifications, the lock screen, menus and so on. The choice is
-saved and restored at login.
+Only one bar runs at a time: choosing a shoji bar stops Quickshell, and choosing Quickshell stops
+shoji. A shoji bar has to answer what Omarchy sends to its shell (the fork does this for media keys
+and the on-screen display so far, see its `TODO.md`); until a bar covers everything you use, set
+`ALTER_BAR_COEXIST=1` and Quickshell is kept alive with only its bar hidden (what earlier versions
+always did). The choice is saved and restored at login.
 
 ## Requirements
 
@@ -60,6 +62,7 @@ alter-bar toggle | next            switch to the next bar in the list (rotates)
 alter-bar prev                     switch to the previous one
 alter-bar set <name>               choose a bar
 alter-bar set-bar <name> <path>    register a shoji bar (a project directory or an executable)
+alter-bar rename <old> <new>       give a bar another name (`quickshell` keeps its own)
 alter-bar remove-bar <name>        remove a registered bar
 alter-bar reload                   reload the chosen bar
 alter-bar status                   show the chosen bar and what is running

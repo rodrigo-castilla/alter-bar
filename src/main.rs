@@ -5,8 +5,10 @@
 //! is a shoji project (or an executable) with its own binary. `list` shows them with a `*` on
 //! the chosen one and `toggle` rotates to the next one in the list.
 //!
-//! Quickshell is never killed when switching to a shoji bar: only its bar is hidden, because
-//! Omarchy needs it for notifications, the lock screen, etc. The chosen name is saved on disk and
+//! Only one of them runs at a time: choosing a shoji bar stops Quickshell (the shoji bar answers
+//! what Omarchy sends to its shell, see the fork's `omarchy.rs`), and choosing Quickshell stops
+//! shoji. While a shoji bar still lacks some Omarchy action, `ALTER_BAR_COEXIST=1` keeps the old
+//! way: Quickshell stays alive with only its bar hidden. The chosen name is saved on disk and
 //! `apply` restores it when the session starts (call it from Hyprland's autostart).
 
 use std::env;
@@ -98,6 +100,15 @@ fn registry_file() -> PathBuf {
     base.join("alter-bar/bars")
 }
 
+/// Built-in bars the user has renamed away: `!name` lines in the registry.
+fn read_hidden() -> Vec<String> {
+    fs::read_to_string(registry_file())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix('!').map(|n| n.trim().to_owned()))
+        .collect()
+}
+
 /// The bars registered by the user: `name = path` lines, in order.
 fn read_registry() -> Vec<(String, PathBuf)> {
     let Ok(text) = fs::read_to_string(registry_file()) else {
@@ -116,6 +127,10 @@ fn read_registry() -> Vec<(String, PathBuf)> {
 }
 
 fn write_registry(entries: &[(String, PathBuf)]) -> io::Result<()> {
+    write_registry_with(entries, &read_hidden())
+}
+
+fn write_registry_with(entries: &[(String, PathBuf)], hidden: &[String]) -> io::Result<()> {
     let path = registry_file();
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -123,6 +138,9 @@ fn write_registry(entries: &[(String, PathBuf)]) -> io::Result<()> {
     let mut text = String::from("# Bars registered with `alter-bar set-bar <name> <path>`\n");
     for (name, path) in entries {
         text.push_str(&format!("{name} = {}\n", path.display()));
+    }
+    for name in hidden {
+        text.push_str(&format!("!{name}\n"));
     }
     fs::write(path, text)
 }
@@ -139,6 +157,9 @@ fn bars() -> Vec<Bar> {
             kind: Kind::Shoji(home().join(".config/shoji-bar-4")),
         },
     ];
+    if read_hidden().iter().any(|n| n == SHOJI_ORIGINAL) {
+        list.retain(|b| b.name != SHOJI_ORIGINAL);
+    }
     for (name, path) in read_registry() {
         if name == QUICKSHELL {
             continue;
@@ -210,8 +231,17 @@ fn quickshell_running() -> bool {
     run("pgrep", &["-f", "quickshell .*omarchy/shell"])
 }
 
+/// Ready to take calls: it answers, and its socket is there (shoji's takeover of it needs that).
 fn quickshell_ready() -> bool {
-    run("omarchy-shell", &["shell", "ping"])
+    let runtime = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/run/user/1000"));
+    let has_socket = fs::read_dir(runtime).is_ok_and(|d| {
+        d.flatten().any(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.starts_with("omarchy-shell-") && n.ends_with(".sock")
+        })
+    });
+    has_socket && run("omarchy-shell", &["shell", "ping"])
 }
 
 fn start_quickshell() {
@@ -230,10 +260,27 @@ fn start_quickshell() {
     }
 }
 
-/// Hides or shows only Omarchy's bar. Quickshell stays alive (notifications with media
-/// controls, lock screen, menus...). The flag lives on disk, so it survives restarts.
+/// Whether Quickshell stays alive under a shoji bar (`ALTER_BAR_COEXIST=1`), with only its bar hidden.
+fn coexist() -> bool {
+    env::var("ALTER_BAR_COEXIST").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// Hides or shows only Omarchy's bar. The flag lives on disk, so it survives restarts.
 fn omarchy_bar_hidden(hidden: bool) {
     run("omarchy-toggle-bar", &[if hidden { "on" } else { "off" }]);
+}
+
+/// Stops Quickshell: its own `qs kill` first, a TERM if that does not do it.
+fn stop_quickshell() {
+    if !quickshell_running() {
+        return;
+    }
+    let shell = env::var("OMARCHY_PATH").unwrap_or_else(|_| "/usr/share/omarchy".into());
+    run("qs", &["kill", "-n", "-p", &format!("{shell}/shell")]);
+    if !wait_until(|| !quickshell_running(), Duration::from_secs(3)) {
+        run("pkill", &["-TERM", "-f", "quickshell .*omarchy/shell"]);
+        wait_until(|| !quickshell_running(), Duration::from_secs(3));
+    }
 }
 
 /// The shoji processes that are running, with the executable of each.
@@ -307,7 +354,8 @@ fn start_shoji(exe: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Leaves only the requested bar visible. Quickshell is never killed.
+/// Leaves only the requested bar: the others are stopped (Quickshell too, unless
+/// `ALTER_BAR_COEXIST` is set, which hides its bar and keeps it alive).
 fn activate(bar: &Bar) -> io::Result<()> {
     match bar.exe() {
         None => {
@@ -315,6 +363,7 @@ fn activate(bar: &Bar) -> io::Result<()> {
             if !quickshell_running() {
                 start_quickshell();
             }
+            wait_until(quickshell_ready, Duration::from_secs(60));
             omarchy_bar_hidden(false);
         }
         Some(exe) => {
@@ -328,15 +377,23 @@ fn activate(bar: &Bar) -> io::Result<()> {
                     ),
                 ));
             }
-            if !quickshell_running() {
-                start_quickshell();
-            }
-            // shoji must start AFTER quickshell: whichever gets there first owns the D-Bus
-            // notifications name, and we want Omarchy's.
-            wait_until(quickshell_ready, Duration::from_secs(60));
-            omarchy_bar_hidden(true);
             // Any other shoji variant goes away; if this one is already running, it stays.
             stop_shoji(Some(&exe));
+            if coexist() {
+                if !quickshell_running() {
+                    start_quickshell();
+                }
+                // shoji must start AFTER quickshell: whichever gets there first owns the D-Bus
+                // notifications name, and here we want Omarchy's.
+                wait_until(quickshell_ready, Duration::from_secs(60));
+                omarchy_bar_hidden(true);
+            } else {
+                // Quickshell goes first so that shoji is the one that owns the notifications
+                // name and the shell's socket. Its bar flag is put back to visible, so that the
+                // next time Quickshell starts it shows its bar.
+                stop_quickshell();
+                omarchy_bar_hidden(false);
+            }
             if !shoji_running(&exe) {
                 start_shoji(&exe)?;
             }
@@ -641,7 +698,9 @@ fn set_bar(name: &str, path: &str) -> Result<(), String> {
         Some(entry) => entry.1 = path.clone(),
         None => entries.push((name.to_owned(), path.clone())),
     }
-    write_registry(&entries).map_err(|e| e.to_string())?;
+    let mut hidden = read_hidden();
+    hidden.retain(|n| n != name);
+    write_registry_with(&entries, &hidden).map_err(|e| e.to_string())?;
     let exe = shoji_exe(&path);
     println!("{name} -> {}", path.display());
     if !exe.is_file() {
@@ -650,6 +709,40 @@ fn set_bar(name: &str, path: &str) -> Result<(), String> {
             exe.display()
         );
     }
+    Ok(())
+}
+
+/// Gives a bar another name, keeping where it is and whether it is the chosen one.
+fn rename_bar(old: &str, new: &str) -> Result<(), String> {
+    let old = if old == "shoji" { SHOJI_ORIGINAL } else { old };
+    if !valid_name(new) {
+        return Err(format!("invalid name `{new}`: only letters, digits, `-` and `_`"));
+    }
+    if old == QUICKSHELL || new == QUICKSHELL {
+        return Err("`quickshell` is a built-in bar and keeps its name".into());
+    }
+    let list = bars();
+    let bar = find(&list, old)?.clone();
+    if list.iter().any(|b| b.name == new) {
+        return Err(format!("there is already a bar called `{new}`"));
+    }
+    let Kind::Shoji(path) = bar.kind else { unreachable!("quickshell was refused above") };
+    let mut entries = read_registry();
+    let mut hidden = read_hidden();
+    hidden.retain(|n| n != new);
+    match entries.iter_mut().find(|(n, _)| n == old) {
+        Some(entry) => entry.0 = new.to_owned(),
+        None => {
+            // The built-in original: the new name takes its path and the old one is hidden.
+            entries.push((new.to_owned(), path));
+            hidden.push(old.to_owned());
+        }
+    }
+    write_registry_with(&entries, &hidden).map_err(|e| e.to_string())?;
+    if current_name() == old {
+        write_current(new).map_err(|e| e.to_string())?;
+    }
+    println!("{old} -> {new}");
     Ok(())
 }
 
@@ -691,6 +784,7 @@ fn usage() -> ! {
          set <name>              choose a bar\n  \
          set-bar <name> <path>   register a shoji bar (a project or an executable)\n  \
          remove-bar <name>       remove a registered bar\n  \
+         rename <old> <new>      give a bar another name\n  \
          reload                  reload the chosen one; a shoji project is built first if it changed\n  \
          status                  show the chosen bar and what is running\n  \
          apply                   activate the chosen bar (for login)\n  \
@@ -723,6 +817,12 @@ fn main() {
         }
         ["set-bar", name, path] => {
             if let Err(e) = set_bar(name, path) {
+                fail(e);
+            }
+            Ok(())
+        }
+        ["rename", old, new] => {
+            if let Err(e) = rename_bar(old, new) {
                 fail(e);
             }
             Ok(())
