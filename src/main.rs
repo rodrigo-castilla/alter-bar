@@ -50,11 +50,13 @@ impl Bar {
     }
 }
 
-/// The cargo profile a project is rebuilt with: `fast` (no LTO, incremental: a change in
-/// `plugins/` costs ~1 s instead of ~20 s) if the project defines it, `release` otherwise.
+/// The cargo profile a project is rebuilt with: `release` (what runs day to day, symlinked from
+/// `~/.cargo/bin`). `ALTER_BAR_PROFILE=fast` picks the quick profile (no LTO, incremental: a change
+/// in `plugins/` costs ~1 s instead of ~2 min) for projects that define it, while developing.
 fn profile_of(project: &Path) -> &'static str {
+    let wants_fast = std::env::var("ALTER_BAR_PROFILE").is_ok_and(|p| p == "fast");
     match fs::read_to_string(project.join("Cargo.toml")) {
-        Ok(toml) if toml.contains("[profile.fast]") => "fast",
+        Ok(toml) if wants_fast && toml.contains("[profile.fast]") => "fast",
         _ => "release",
     }
 }
@@ -337,6 +339,9 @@ fn stop_shoji(keep: Option<&Path>) {
         }
         if pid_alive(pid) {
             run("kill", &["-KILL", &pid.to_string()]);
+            // It could not clean up after itself: the keys it rebound stay bound to its commands
+            // until Hyprland reads its configuration again, which puts Omarchy's back.
+            run("hyprctl", &["reload"]);
         }
     }
 }

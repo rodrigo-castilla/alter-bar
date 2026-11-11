@@ -79,16 +79,16 @@ alter-bar set-bar my-bar ~/src/my-shoji-bar     # a directory with a shoji-bar-4
 alter-bar set my-bar
 ```
 
-For a project directory the binary is `target/release/shoji-bar-4` (or `target/fast/shoji-bar-4`
-if the project defines a `[profile.fast]`).
+For a project directory the binary is `target/release/shoji-bar-4`. With `ALTER_BAR_PROFILE=fast`
+and a project that defines a `[profile.fast]` it is `target/fast/shoji-bar-4` instead.
 
 ### `alter-bar reload`
 
-For a shoji project, `reload` first runs `cargo build` (with the project's `fast` profile when it
-has one, `release` otherwise), shows a progress bar, and restarts the bar only if the build
+For a shoji project, `reload` first runs `cargo build --release` (the `fast` profile with
+`ALTER_BAR_PROFILE=fast`, for a project that has one), shows a progress bar, and restarts the bar only if the build
 succeeded. If it fails the running bar is left alone and the errors are printed. That makes
 editing a [plugin](https://github.com/rodrigo-castilla/shoji-bar-4-fork#plugins) and seeing the result
-about a second away.
+about a second away with `ALTER_BAR_PROFILE=fast` (a release build takes a couple of minutes).
 
 ## Files
 
