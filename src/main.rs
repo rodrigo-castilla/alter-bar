@@ -801,7 +801,8 @@ fn usage() -> ! {
          set-bar <name> <path>   register a shoji bar (a project or an executable)\n  \
          remove-bar <name>       remove a registered bar\n  \
          rename <old> <new>      give a bar another name\n  \
-         reload                  reload the chosen one; a shoji project is built first if it changed\n  \
+         reload [-f|--fast]      reload the chosen one; a shoji project is built first if it changed\n  \
+                                 (-f: with the quick `fast` profile, for developing)\n  \
          status                  show the chosen bar and what is running\n  \
          apply                   activate the chosen bar (for login)\n  \
          version | --version | -V  show the version"
@@ -849,7 +850,11 @@ fn main() {
             }
             Ok(())
         }
-        ["reload"] => {
+        ["reload"] | ["reload", "-f" | "--fast"] => {
+            if args.len() == 2 {
+                // Only this run, before any other thread exists: the quick profile.
+                unsafe { env::set_var("ALTER_BAR_PROFILE", "fast") };
+            }
             let list = bars();
             reload(&current(&list)).map_err(io::Error::other)
         }

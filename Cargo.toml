@@ -1,6 +1,6 @@
 [package]
 name = "alter-bar"
-version = "0.5.0-alpha.3"
+version = "0.5.0-alpha.4"
 edition = "2024"
 description = "Switch the Hyprland/Omarchy top bar between quickshell and shoji-bar variants"
 repository = "https://github.com/rodrigo-castilla/alter-bar"
