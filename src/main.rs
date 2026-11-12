@@ -277,9 +277,20 @@ fn stop_quickshell() {
     if !quickshell_running() {
         return;
     }
+    // At login Quickshell is still starting up when we get here. Killing it in the middle of its
+    // first frames makes it segfault on exit (OpenSSL torn down under the render thread), and the
+    // omarchy-shell wrapper relaunches a crashed Quickshell, which then lives next to the bar.
+    // So it gets to finish starting first.
+    wait_until(quickshell_ready, Duration::from_secs(30));
     let shell = env::var("OMARCHY_PATH").unwrap_or_else(|_| "/usr/share/omarchy".into());
     run("qs", &["kill", "-n", "-p", &format!("{shell}/shell")]);
     if !wait_until(|| !quickshell_running(), Duration::from_secs(3)) {
+        run("pkill", &["-TERM", "-f", "quickshell .*omarchy/shell"]);
+        wait_until(|| !quickshell_running(), Duration::from_secs(3));
+    }
+    // Had it crashed anyway, the wrapper brings it back a moment later: take it down again.
+    std::thread::sleep(Duration::from_millis(1500));
+    if quickshell_running() {
         run("pkill", &["-TERM", "-f", "quickshell .*omarchy/shell"]);
         wait_until(|| !quickshell_running(), Duration::from_secs(3));
     }
